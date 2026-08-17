@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Problem Solver Platform</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f7f7f8; color: #1a1a1a; }
+  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+  h1 { font-size: 22px; margin: 0; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 14px; }
+  .btn-primary { background: #2563eb; color: white; }
+  .btn-secondary { background: #e5e7eb; color: #1a1a1a; }
+  .btn-danger { background: #dc2626; color: white; }
+  .filters { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  select, input, textarea { padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+  .card { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; margin-bottom: 12px; cursor: pointer; }
+  .card:hover { border-color: #2563eb; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; margin-right: 6px; }
+  .badge-open { background: #dcfce7; color: #166534; }
+  .badge-claimed { background: #fef9c3; color: #854d0e; }
+  .badge-solved { background: #dbeafe; color: #1e40af; }
+  .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; }
+  .modal-bg.open { display: flex; }
+  .modal { background: white; border-radius: 10px; padding: 24px; width: 90%; max-width: 500px; max-height: 85vh; overflow-y: auto; }
+  .modal label { display: block; margin-top: 12px; font-size: 13px; font-weight: 600; }
+  .modal input, .modal select, .modal textarea { width: 100%; margin-top: 4px; }
+  .modal textarea { min-height: 70px; }
+  .comment { border-top: 1px solid #eee; padding: 8px 0; font-size: 14px; }
+  .comment.flagged { color: #999; font-style: italic; }
+  #detail-actions { display: flex; gap: 8px; margin: 16px 0; flex-wrap: wrap; }
+  .muted { color: #666; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Problem Solver Platform</h1>
+  <div id="auth-area"></div>
+</header>
+
+<div class="filters">
+  <select id="filter-category"><option value="">All categories</option><option value="civil">Civil</option><option value="engineering">Engineering</option></select>
+  <select id="filter-domain">
+    <option value="">All domains</option>
+    <option>Software/Web Development</option>
+    <option>Mobile App Development</option>
+    <option>IoT / Hardware</option>
+    <option>AI / Machine Learning</option>
+    <option>Data / Analytics</option>
+    <option>Civil Infrastructure</option>
+    <option>Environment / Sustainability</option>
+    <option>Healthcare</option>
+    <option>Education</option>
+    <option>Transportation / Mobility</option>
+    <option>Other</option>
+  </select>
+  <select id="filter-sort"><option value="newest">Newest</option><option value="most_needed">Most needed</option></select>
+  <button class="btn-primary" id="post-btn" style="margin-left:auto;">+ Post a problem</button>
+</div>
+
+<div id="feed"></div>
+
+<!-- Post problem modal -->
+<div class="modal-bg" id="post-modal">
+  <div class="modal">
+    <h2>Post a problem</h2>
+    <label>Title</label>
+    <input id="f-title" placeholder="Short, specific title">
+    <label>Description</label>
+    <textarea id="f-description" placeholder="What's the problem, in your own words"></textarea>
+    <label>Category</label>
+    <select id="f-category"><option value="civil">Civil</option><option value="engineering">Engineering</option></select>
+    <label>Domain</label>
+    <select id="f-domain">
+      <option>Software/Web Development</option><option>Mobile App Development</option>
+      <option>IoT / Hardware</option><option>AI / Machine Learning</option>
+      <option>Data / Analytics</option><option>Civil Infrastructure</option>
+      <option>Environment / Sustainability</option><option>Healthcare</option>
+      <option>Education</option><option>Transportation / Mobility</option><option>Other</option>
+    </select>
+    <label>Frequency / severity (optional)</label>
+    <input id="f-frequency" placeholder="e.g. Every night">
+    <label>Current workaround (optional)</label>
+    <input id="f-workaround" placeholder="What do you do today instead">
+    <div style="margin-top:16px; display:flex; gap:8px;">
+      <button class="btn-primary" id="f-submit">Post</button>
+      <button class="btn-secondary" id="f-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Problem detail modal -->
+<div class="modal-bg" id="detail-modal">
+  <div class="modal">
+    <div id="detail-content"></div>
+    <button class="btn-secondary" id="detail-close" style="margin-top:16px;">Close</button>
+  </div>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+// ---------- Auth ----------
+function getToken() { return localStorage.getItem("token"); }
+function setToken(t) { localStorage.setItem("token", t); }
+function clearToken() { localStorage.removeItem("token"); }
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { "Authorization": "Bearer " + t } : {};
+}
+
+// capture ?token= from GitHub OAuth redirect
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get("token")) {
+  setToken(urlParams.get("token"));
+  window.history.replaceState({}, "", window.location.pathname);
+}
+
+let currentUser = null;
+
+async function loadUser() {
+  if (!getToken()) { renderAuthArea(); return; }
+  try {
+    const res = await fetch(API + "/auth/me", { headers: authHeaders() });
+    if (!res.ok) { clearToken(); renderAuthArea(); return; }
+    currentUser = await res.json();
+  } catch (e) { currentUser = null; }
+  renderAuthArea();
+}
+
+function renderAuthArea() {
+  const el = document.getElementById("auth-area");
+  if (currentUser) {
+    el.innerHTML = `<span class="muted">${currentUser.username}${currentUser.is_verified_solver ? " ✓ verified" : ""}</span> <button class="btn-secondary" id="logout-btn">Logout</button>`;
+    document.getElementById("logout-btn").onclick = () => { clearToken(); currentUser = null; renderAuthArea(); loadFeed(); };
+  } else {
+    el.innerHTML = `<button class="btn-primary" id="login-btn">Login with GitHub</button>`;
+    document.getElementById("login-btn").onclick = () => { window.location.href = API + "/auth/login"; };
+  }
+}
+
+// ---------- Feed ----------
+async function loadFeed() {
+  const category = document.getElementById("filter-category").value;
+  const domain = document.getElementById("filter-domain").value;
+  const sort = document.getElementById("filter-sort").value;
+
+  const params = new URLSearchParams();
+  if (category) params.set("category", category);
+  if (domain) params.set("domain", domain);
+  params.set("sort", sort);
+
+  const res = await fetch(API + "/problems?" + params.toString());
+  const problems = await res.json();
+
+  const feed = document.getElementById("feed");
+  if (problems.length === 0) {
+    feed.innerHTML = `<p class="muted">No problems found. Be the first to post one.</p>`;
+    return;
+  }
+
+  feed.innerHTML = problems.map(p => `
+    <div class="card" data-id="${p.id}">
+      <span class="badge badge-${p.status}">${p.status}</span>
+      <span class="badge" style="background:#f3f4f6;">${p.domain}</span>
+      <h3 style="margin:8px 0 4px;">${escapeHtml(p.title)}</h3>
+      <p class="muted" style="margin:0;">${escapeHtml(p.description.slice(0, 120))}${p.description.length > 120 ? "..." : ""}</p>
+      <p class="muted" style="margin-top:8px;">posted by ${escapeHtml(p.poster.username)}</p>
+    </div>
+  `).join("");
+
+  document.querySelectorAll(".card").forEach(card => {
+    card.onclick = () => openDetail(card.dataset.id);
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---------- Problem detail ----------
+async function openDetail(problemId) {
+  const res = await fetch(API + "/problems/" + problemId);
+  const p = await res.json();
+
+  const commentsRes = await fetch(API + "/problems/" + problemId + "/comments");
+  const comments = await commentsRes.json();
+
+  let actionsHtml = "";
+  if (currentUser) {
+    if (p.status === "open" && p.poster.id !== currentUser.id) {
+      actionsHtml += `<button class="btn-primary" id="claim-btn">Claim this problem</button>`;
+    }
+    if (p.status === "claimed") {
+      actionsHtml += `<button class="btn-secondary" id="unclaim-btn">Unclaim</button>`;
+      actionsHtml += `<button class="btn-primary" id="solve-btn">Submit solution</button>`;
+    }
+    if (p.poster.id === currentUser.id) {
+      actionsHtml += `<button class="btn-danger" id="delete-btn">Delete</button>`;
+    }
+  }
+
+  document.getElementById("detail-content").innerHTML = `
+    <span class="badge badge-${p.status}">${p.status}</span>
+    <span class="badge" style="background:#f3f4f6;">${p.category} / ${escapeHtml(p.domain)}</span>
+    <h2>${escapeHtml(p.title)}</h2>
+    <p>${escapeHtml(p.description)}</p>
+    ${p.frequency_severity ? `<p class="muted"><strong>Frequency/severity:</strong> ${escapeHtml(p.frequency_severity)}</p>` : ""}
+    ${p.current_workaround ? `<p class="muted"><strong>Current workaround:</strong> ${escapeHtml(p.current_workaround)}</p>` : ""}
+    ${p.github_repo_url ? `<p><strong>Solution:</strong> <a href="${p.github_repo_url}" target="_blank">${p.github_repo_url}</a></p>` : ""}
+    <p class="muted">posted by ${escapeHtml(p.poster.username)}</p>
+    <div id="detail-actions">${actionsHtml}</div>
+    <h3>Comments</h3>
+    <div id="comments-list">
+      ${comments.map(c => `<div class="comment ${c.is_flagged ? "flagged" : ""}"><strong>${escapeHtml(c.user.username)}:</strong> ${escapeHtml(c.content)}</div>`).join("") || '<p class="muted">No comments yet.</p>'}
+    </div>
+    ${currentUser ? `
+      <div style="margin-top:12px;">
+        <textarea id="new-comment" placeholder="Add a comment..." style="width:100%;"></textarea>
+        <button class="btn-primary" id="comment-submit" style="margin-top:6px;">Comment</button>
+      </div>
+    ` : `<p class="muted">Login to comment.</p>`}
+  `;
+
+  document.getElementById("detail-modal").classList.add("open");
+
+  if (currentUser) {
+    const claimBtn = document.getElementById("claim-btn");
+    if (claimBtn) claimBtn.onclick = () => claimProblem(problemId);
+
+    const unclaimBtn = document.getElementById("unclaim-btn");
+    if (unclaimBtn) unclaimBtn.onclick = () => unclaimProblem(problemId);
+
+    const solveBtn = document.getElementById("solve-btn");
+    if (solveBtn) solveBtn.onclick = () => submitSolution(problemId);
+
+    const deleteBtn = document.getElementById("delete-btn");
+    if (deleteBtn) deleteBtn.onclick = () => deleteProblem(problemId);
+
+    const commentSubmit = document.getElementById("comment-submit");
+    if (commentSubmit) commentSubmit.onclick = () => postComment(problemId);
+  }
+}
+
+async function claimProblem(id) {
+  const res = await fetch(API + `/problems/${id}/claim`, { method: "POST", headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || "Failed to claim"); return; }
+  openDetail(id); loadFeed();
+}
+
+async function unclaimProblem(id) {
+  const res = await fetch(API + `/problems/${id}/unclaim`, { method: "POST", headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || "Failed to unclaim"); return; }
+  openDetail(id); loadFeed();
+}
+
+async function submitSolution(id) {
+  const url = prompt("GitHub repo URL for your solution:");
+  if (!url) return;
+  const isPublic = confirm("Make this solution public? (Cancel = private, only you and poster see it)");
+  const res = await fetch(API + `/problems/${id}/solution`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ github_repo_url: url, is_public: isPublic }),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.detail || "Failed to submit solution"); return; }
+  openDetail(id); loadFeed();
+}
+
+async function deleteProblem(id) {
+  if (!confirm("Delete this problem?")) return;
+  const res = await fetch(API + `/problems/${id}`, { method: "DELETE", headers: authHeaders() });
+  if (!res.ok) { alert("Failed to delete"); return; }
+  document.getElementById("detail-modal").classList.remove("open");
+  loadFeed();
+}
+
+async function postComment(id) {
+  const content = document.getElementById("new-comment").value.trim();
+  if (!content) return;
+  const res = await fetch(API + `/problems/${id}/comments`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) { alert("Failed to post comment"); return; }
+  openDetail(id);
+}
+
+// ---------- Post problem ----------
+document.getElementById("post-btn").onclick = () => {
+  if (!currentUser) { alert("Login first to post a problem."); return; }
+  document.getElementById("post-modal").classList.add("open");
+};
+document.getElementById("f-cancel").onclick = () => document.getElementById("post-modal").classList.remove("open");
+
+document.getElementById("f-submit").onclick = async () => {
+  const body = {
+    title: document.getElementById("f-title").value.trim(),
+    description: document.getElementById("f-description").value.trim(),
+    category: document.getElementById("f-category").value,
+    domain: document.getElementById("f-domain").value,
+    frequency_severity: document.getElementById("f-frequency").value.trim() || null,
+    current_workaround: document.getElementById("f-workaround").value.trim() || null,
+  };
+  if (!body.title || !body.description) { alert("Title and description are required."); return; }
+
+  const res = await fetch(API + "/problems", {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { const d = await res.json(); alert(d.detail || "Failed to post"); return; }
+
+  document.getElementById("post-modal").classList.remove("open");
+  ["f-title","f-description","f-frequency","f-workaround"].forEach(id => document.getElementById(id).value = "");
+  loadFeed();
+};
+
+document.getElementById("detail-close").onclick = () => document.getElementById("detail-modal").classList.remove("open");
+
+document.getElementById("filter-category").onchange = loadFeed;
+document.getElementById("filter-domain").onchange = loadFeed;
+document.getElementById("filter-sort").onchange = loadFeed;
+
+// ---------- Init ----------
+loadUser().then(loadFeed);
+</script>
+
+</body>
+</html>
